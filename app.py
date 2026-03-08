@@ -1,3 +1,5 @@
+import torch
+import torch.nn as nn
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -5,408 +7,423 @@ import pickle
 import os
 import plotly.express as px
 import plotly.graph_objects as go
-from PIL import Image
-import base64
+from plotly.subplots import make_subplots
+import warnings
+warnings.filterwarnings('ignore')
 
 # Настройка страницы
 st.set_page_config(
     page_title="Классификатор астероидов",
-    page_icon="☄️",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Определяем базовую директорию
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Функция для загрузки моделей
+# Класс модели
+class MyClassificationModel(nn.Module):
+    # любая модель в PyTorch - это набор слоев
+    # при этом, мы сами определяем порядок их выполнения
+    # в конструкторе мы задаем набор слоев с указанием параметров
+    def __init__(self):
+        super(MyClassificationModel, self).__init__()
+
+        self.first_linear = nn.Linear(6, 32)
+        # определяем первый слой ReLU
+        self.first_relu = nn.ReLU()
+        self.dropout1 = nn.Dropout(0.1)
+        self.second_linear = nn.Linear(32, 64)
+        self.second_relu = nn.ReLU()
+        self.dropout2 = nn.Dropout(0.2)
+        self.third_linear = nn.Linear(64, 32)
+        self.third_relu = nn.ReLU()
+        self.dropout3 = nn.Dropout(0.2)
+        self.fourth_linear = nn.Linear(32, 6)
+        self.fourth_relu = nn.ReLU()
+        self.dropout4 = nn.Dropout(0.1)
+        self.fifth_linear = nn.Linear(6, 1)
+
+        #self.softmax = nn.Softmax(dim=1)
+
+        self.sigmoid = nn.Sigmoid()
+
+    # в методе forward мы определяем, как слои будут связаны друг с другом
+    def forward(self, x):
+        # y - результат выполнения первого слоя
+        y = self.first_linear(x)
+        # в теперь продолжаем накидывать оставшиеся слои
+        y = self.first_relu(y)
+        y = self.dropout1(y)
+        y = self.second_linear(y)
+        y = self.second_relu(y)
+        y = self.dropout2(y)
+        y = self.third_linear(y)
+        y = self.third_relu(y)
+        y = self.dropout3(y)
+        y = self.fourth_linear(y)
+        y = self.fourth_relu(y)
+        y = self.dropout4(y)
+        y = self.fifth_linear(y)
+
+        y = self.sigmoid(y)
+        #y = self.softmax(y)
+        #self.sigmoid = nn.Sigmoid()
+        return y
+
+# Загрузка моделей
 @st.cache_resource
 def load_models():
-    """Загрузка всех сохраненных моделей"""
     models = {}
-    model_files = {
-        'Логистическая регрессия': os.path.join(BASE_DIR, 'models', 'model_logreg.pkl'),
-        'Градиентный бустинг': os.path.join(BASE_DIR, 'models', 'model_gb.pkl'),
-        'XGBoost': os.path.join(BASE_DIR, 'models', 'model_xgb.pkl'),
-        'Bagging': os.path.join(BASE_DIR, 'models', 'model_bagging.pkl'),
-        'Stacking': os.path.join(BASE_DIR, 'models', 'model_stacking.pkl'),
-        'Нейронная сеть': os.path.join(BASE_DIR, 'models', 'model_nn.pkl')
-    }
+    models_dir = os.path.join(BASE_DIR, 'models')
     
-    loaded_models = {}
-    for name, path in model_files.items():
-        try:
-            if os.path.exists(path):
+    model_files = [
+        ('Логистическая регрессия', 'model_logreg.pkl'),
+        ('Градиентный бустинг', 'model_gb.pkl'),
+        ('XGBoost', 'model_xgb.pkl'),
+        ('Bagging', 'model_bagging.pkl'),
+        ('Stacking', 'model_stacking.pkl'),
+        ('KNN', 'model_knn.pkl')
+    ]
+    
+    for name, filename in model_files:
+        path = os.path.join(models_dir, filename)
+        if os.path.exists(path):
+            try:
                 with open(path, 'rb') as f:
-                    loaded_models[name] = pickle.load(f)
-                st.sidebar.success(f"✅ {name} загружена")
-            else:
-                st.sidebar.warning(f"❌ {name} не найдена: {path}")
-                loaded_models[name] = None
-        except Exception as e:
-            st.sidebar.error(f"Ошибка загрузки {name}: {str(e)}")
-            loaded_models[name] = None
+                    models[name] = pickle.load(f)
+            except:
+                try:
+                    with open(path, 'rb') as f:
+                        models[name] = pickle.load(f, fix_imports=True, encoding='latin1')
+                except:
+                    pass
     
-    return loaded_models
+    nn_path = os.path.join(models_dir, 'model_nn.pth')
+    if os.path.exists(nn_path):
+        try:
+            torch.serialization.add_safe_globals([MyClassificationModel, nn.Linear, nn.ReLU, nn.Dropout, nn.Sigmoid, nn.Sequential])
+            models['Нейронная сеть'] = torch.load(nn_path, map_location='cpu', weights_only=True).eval()
+        except:
+            try:
+                models['Нейронная сеть'] = torch.load(nn_path, map_location='cpu', weights_only=False).eval()
+            except:
+                pass
+    return models
 
-# Функция для загрузки данных
+# Загрузка данных
 @st.cache_data
 def load_data():
-    """Загрузка датасета"""
-    data_path = os.path.join(BASE_DIR, 'data', 'dynamic_file_Class.csv')
-    
-    # Если файл не найден, создаем пример данных
-    if not os.path.exists(data_path):
-        # Создаем пример данных
-        np.random.seed(42)
-        n_samples = 1000
-        
-        data = {
-            'est_diameter_min': np.random.uniform(0.01, 2.0, n_samples),
-            'est_diameter_max': np.random.uniform(0.02, 4.0, n_samples),
-            'relative_velocity': np.random.uniform(1000, 100000, n_samples),
-            'miss_distance': np.random.uniform(10000, 100000000, n_samples),
-            'absolute_magnitude': np.random.uniform(10, 30, n_samples),
-            'hazardous': np.random.choice([0, 1], n_samples, p=[0.8, 0.2])
-        }
-        df = pd.DataFrame(data)
-        
-        # Сохраняем пример данных
-        os.makedirs(os.path.dirname(data_path), exist_ok=True)
-        df.to_csv(data_path, index=False)
-        st.info("📁 Создан пример датасета для демонстрации")
-    
-    return pd.read_csv(data_path)
+    try:
+        df = pd.read_csv(os.path.join(BASE_DIR, 'data', 'dynamic_file_Class.csv'))
+        if 'avg_diameter' not in df.columns:
+            df['avg_diameter'] = (df['est_diameter_min'] + df['est_diameter_max']) / 2
+        return df
+    except:
+        return pd.DataFrame()
 
-# Страница 1: Информация о разработчике
-def show_developer_info():
-    st.title("☄️ Информация о разработчике")
-    
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        # Создаем аватарку с инициалами
-        st.markdown("""
-        <div style="background-color: #f0f2f6; padding: 20px; border-radius: 10px; text-align: center;">
-            <h1 style="font-size: 100px;">👨‍💻</h1>
-            <h3>Ваше Фото</h3>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown("""
-        ### 👨‍🎓 Студент
-        **ФИО:** Иванов Иван Иванович  
-        **Группа:** ИТ-123  
-        **Тема РГР:** Классификация опасных астероидов
-        
-        ### 📊 О проекте
-        Веб-приложение для предсказания потенциально опасных астероидов 
-        на основе их физических характеристик.
-        
-        ### 🎯 Используемые модели
-        - **ML1:** Логистическая регрессия (F1-score: 0.85)
-        - **ML2:** Градиентный бустинг (F1-score: 0.89)
-        - **ML3:** XGBoost (F1-score: 0.91)
-        - **ML4:** Bagging (F1-score: 0.88)
-        - **ML5:** Stacking (F1-score: 0.92)
-        - **ML6:** Нейронная сеть (F1-score: 0.90)
-        """)
-
-# Страница 2: Информация о датасете
-def show_dataset_info():
-    st.title("📊 Информация о наборе данных")
-    
-    df = load_data()
-    
-    st.markdown("""
-    ### 🌍 Описание датасета
-    Датасет содержит информацию об астероидах, включая их физические 
-    характеристики и параметры сближения с Землей.
-    """)
-    
-    # Основная информация
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Количество записей", len(df))
-    with col2:
-        st.metric("Количество признаков", df.shape[1])
-    with col3:
-        if 'hazardous' in df.columns:
-            danger_pct = (df['hazardous'] == 1).mean() * 100
-            st.metric("Опасных астероидов", f"{danger_pct:.1f}%")
-    
-    # Статическая таблица с описанием признаков
-    st.subheader("📋 Описание признаков")
-    
-    features_info = pd.DataFrame({
-        'Признак': ['est_diameter_min', 'est_diameter_max', 'relative_velocity', 
-                   'miss_distance', 'absolute_magnitude', 'hazardous'],
-        'Описание': [
-            'Минимальный оценочный диаметр',
-            'Максимальный оценочный диаметр',
-            'Относительная скорость',
-            'Дистанция промаха',
-            'Абсолютная звездная величина',
-            'Опасность (1 - да, 0 - нет)'
-        ],
-        'Единицы измерения': ['км', 'км', 'км/ч', 'км', 'магнитуда', 'бинарный']
-    })
-    
-    st.dataframe(features_info, use_container_width=True)
-    
-    # Показываем первые строки датасета
-    st.subheader("👀 Пример данных")
-    st.dataframe(df.head(), use_container_width=True)
-    
-    # Статистика
-    st.subheader("📊 Статистика")
-    st.dataframe(df.describe(), use_container_width=True)
-
-# Страница 3: Визуализации
-def show_visualizations():
-    st.title("📈 Визуализация данных")
-    
-    df = load_data()
-    
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Распределения", 
-        "🔗 Корреляции", 
-        "🔄 Зависимости",
-        "🎯 3D визуализация"
-    ])
-    
-    with tab1:
-        st.subheader("Распределение признаков")
-        feature = st.selectbox("Выберите признак:", df.columns[:-1])
-        
-        fig = px.histogram(
-            df, x=feature, color='hazardous',
-            title=f'Распределение {feature}',
-            color_discrete_map={0: 'blue', 1: 'red'}
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with tab2:
-        st.subheader("Корреляционная матрица")
-        corr = df.corr()
-        fig = px.imshow(
-            corr, 
-            text_auto=True,
-            aspect="auto",
-            color_continuous_scale='RdBu_r'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with tab3:
-        st.subheader("Зависимости между признаками")
-        x_feat = st.selectbox("Ось X:", df.columns[:-1], key='x')
-        y_feat = st.selectbox("Ось Y:", df.columns[:-1], key='y')
-        
-        fig = px.scatter(
-            df, x=x_feat, y=y_feat, color='hazardous',
-            color_discrete_map={0: 'blue', 1: 'red'}
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with tab4:
-        st.subheader("3D визуализация")
-        x_3d = st.selectbox("X:", df.columns[:-1], key='x3d')
-        y_3d = st.selectbox("Y:", df.columns[:-1], key='y3d')
-        z_3d = st.selectbox("Z:", df.columns[:-1], key='z3d')
-        
-        fig = px.scatter_3d(
-            df, x=x_3d, y=y_3d, z=z_3d, color='hazardous',
-            color_discrete_map={0: 'blue', 1: 'red'}
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-# Страница 4: Предсказания
-def show_predictions():
-    st.title("🤖 Предсказание опасности астероида")
-    
-    models = load_models()
-    
-    # Выбор модели
-    st.sidebar.header("⚙️ Настройки")
-    available_models = [name for name, model in models.items() if model is not None]
-    
-    if not available_models:
-        st.error("❌ Нет доступных моделей. Проверьте папку 'models/'")
-        return
-    
-    selected_model_name = st.sidebar.selectbox(
-        "Выберите модель:",
-        available_models
-    )
-    
-    model = models[selected_model_name]
-    
-    # Вкладки для ввода
-    tab1, tab2 = st.tabs(["📝 Ручной ввод", "📁 Загрузка CSV"])
-    
-    with tab1:
-        st.subheader("Введите параметры астероида")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            est_diameter_min = st.number_input(
-                "Минимальный диаметр (км):",
-                min_value=0.0, max_value=10.0, value=0.1,
-                step=0.01, format="%.3f"
-            )
+def predict(model, input_data, model_name):
+    """
+    Универсальная функция предсказания
+    """
+    try:
+        # Для нейронной сети
+        if 'Нейронная сеть' in model_name or isinstance(model, torch.nn.Module):
+            # Убеждаемся, что данные в правильном порядке
+            feature_order = ['est_diameter_min', 'est_diameter_max', 'relative_velocity', 
+                            'miss_distance', 'absolute_magnitude', 'avg_diameter']
             
-            est_diameter_max = st.number_input(
-                "Максимальный диаметр (км):",
-                min_value=0.0, max_value=20.0, value=0.2,
-                step=0.01, format="%.3f"
-            )
+            # Проверяем, что все признаки есть
+            for feat in feature_order:
+                if feat not in input_data.columns:
+                    if feat == 'avg_diameter':
+                        input_data[feat] = (input_data['est_diameter_min'] + input_data['est_diameter_max']) / 2
+                    else:
+                        st.error(f"Отсутствует признак: {feat}")
+                        return None, None
             
-            relative_velocity = st.number_input(
-                "Относительная скорость (км/ч):",
-                min_value=0.0, max_value=200000.0, value=50000.0,
-                step=100.0, format="%.2f"
-            )
-        
-        with col2:
-            miss_distance = st.number_input(
-                "Дистанция промаха (км):",
-                min_value=0.0, max_value=1e9, value=1e7,
-                step=1e6, format="%.2f"
-            )
+            # Берем признаки в правильном порядке
+            X = input_data[feature_order].values
             
-            absolute_magnitude = st.number_input(
-                "Абсолютная звездная величина:",
-                min_value=0.0, max_value=50.0, value=20.0,
-                step=0.1, format="%.1f"
-            )
-        
-        if st.button("🚀 Предсказать", type="primary", use_container_width=True):
-            # Создаем DataFrame с признаками
-            input_data = pd.DataFrame({
-                'est_diameter_min': [est_diameter_min],
-                'est_diameter_max': [est_diameter_max],
-                'relative_velocity': [relative_velocity],
-                'miss_distance': [miss_distance],
-                'absolute_magnitude': [absolute_magnitude]
-            })
-            
-            try:
-                # Предсказание
-                prediction = model.predict(input_data)[0]
+            with torch.no_grad():
+                # Преобразуем в тензор
+                X_tensor = torch.tensor(X, dtype=torch.float32)
                 
-                # Вероятности (если модель поддерживает)
-                if hasattr(model, 'predict_proba'):
-                    proba = model.predict_proba(input_data)[0]
-                    danger_prob = proba[1] if len(proba) > 1 else proba[0]
+                # Получаем предсказание
+                output = model(X_tensor)
+                
+                # Для одного примера
+                if len(X) == 1:
+                    prob = output.item() if output.numel() == 1 else output[0].item()
+                    pred = 1 if prob > 0.5 else 0
+                    return pred, prob
                 else:
-                    danger_prob = 0.5 if prediction == 1 else 0.5
-                
-                # Отображение результата
-                st.markdown("---")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if prediction == 1:
-                        st.error("⚠️ Астероид ОПАСЕН!")
-                    else:
-                        st.success("✅ Астероид НЕ опасен")
-                
-                with col2:
-                    st.metric("Вероятность опасности", f"{danger_prob*100:.1f}%")
-                
-                with col3:
-                    st.metric("Модель", selected_model_name[:20])
-                
-                # Визуализация вероятности
-                fig = go.Figure(go.Indicator(
-                    mode="gauge+number",
-                    value=danger_prob*100,
-                    title={'text': "Вероятность опасности (%)"},
-                    gauge={
-                        'axis': {'range': [0, 100]},
-                        'bar': {'color': "red" if prediction == 1 else "green"},
-                        'steps': [
-                            {'range': [0, 50], 'color': "lightgreen"},
-                            {'range': [50, 100], 'color': "lightcoral"}
-                        ]
-                    }
-                ))
-                fig.update_layout(height=250)
-                st.plotly_chart(fig, use_container_width=True)
-                
-            except Exception as e:
-                st.error(f"Ошибка предсказания: {str(e)}")
-    
-    with tab2:
-        st.subheader("Пакетное предсказание")
-        uploaded_file = st.file_uploader("Загрузите CSV файл", type=['csv'])
+                    # Для нескольких примеров
+                    probs = output.numpy().flatten()
+                    preds = (probs > 0.5).astype(int)
+                    return preds, probs
         
-        if uploaded_file is not None:
-            df_upload = pd.read_csv(uploaded_file)
-            st.write("Предпросмотр данных:", df_upload.head())
+        # Для sklearn моделей
+        else:
+            # Проверяем ожидаемые признаки
+            if hasattr(model, 'feature_names_in_'):
+                expected = list(model.feature_names_in_)
+                
+                # Проверяем наличие всех признаков
+                for feat in expected:
+                    if feat not in input_data.columns:
+                        if feat == 'avg_diameter':
+                            input_data[feat] = (input_data['est_diameter_min'] + input_data['est_diameter_max']) / 2
+                        else:
+                            st.error(f"Модель ожидает признак: {feat}")
+                            return None, None
+                
+                # Выбираем признаки в правильном порядке
+                X = input_data[expected]
+            else:
+                # Если нет информации о признаках, используем все
+                X = input_data
             
-            if st.button("Выполнить предсказания"):
-                try:
-                    # Проверяем наличие нужных колонок
-                    required = ['est_diameter_min', 'est_diameter_max', 
-                               'relative_velocity', 'miss_distance', 'absolute_magnitude']
-                    
-                    if all(col in df_upload.columns for col in required):
-                        predictions = model.predict(df_upload[required])
-                        
-                        df_results = df_upload.copy()
-                        df_results['prediction'] = predictions
-                        df_results['is_dangerous'] = df_results['prediction'].map(
-                            {0: 'Нет', 1: 'Да'}
-                        )
-                        
-                        st.subheader("Результаты:")
-                        st.dataframe(df_results)
-                        
-                        # Кнопка для скачивания
-                        csv = df_results.to_csv(index=False)
-                        st.download_button(
-                            "📥 Скачать результаты",
-                            csv,
-                            "predictions.csv",
-                            "text/csv"
-                        )
-                    else:
-                        st.error(f"Файл должен содержать колонки: {required}")
-                        
-                except Exception as e:
-                    st.error(f"Ошибка: {str(e)}")
+            # Предсказание
+            preds = model.predict(X)
+            
+            # Вероятности
+            if hasattr(model, 'predict_proba'):
+                probs = model.predict_proba(X)
+                if len(probs.shape) == 2 and probs.shape[1] == 2:
+                    # Для бинарной классификации
+                    danger_probs = probs[:, 1]
+                else:
+                    danger_probs = probs.flatten()
+            else:
+                danger_probs = np.array([0.5] * len(preds))
+            
+            # Для одного примера возвращаем скаляры
+            if len(preds) == 1:
+                return preds[0], danger_probs[0]
+            else:
+                return preds, danger_probs
+            
+    except Exception as e:
+        st.error(f"Ошибка в предсказании: {str(e)}")
+        return None, None
 
-# Основная функция
+# Основной интерфейс
 def main():
-    st.sidebar.title("☄️ Навигация")
+    st.sidebar.title("Навигация")
+    page = st.sidebar.radio("", ["Разработчик", "Данные", "Визуализация", "Предсказание"])
     
-    page = st.sidebar.radio(
-        "Выберите страницу:",
-        ["Информация о разработчике", 
-         "Информация о датасете", 
-         "Визуализации",
-         "Предсказания"]
-    )
+    models = load_models() if page in ["Предсказание"] else {}
+    df = load_data() if page in ["Данные", "Визуализация"] else pd.DataFrame()
     
-    if page == "Информация о разработчике":
-        show_developer_info()
-    elif page == "Информация о датасете":
-        show_dataset_info()
-    elif page == "Визуализации":
-        show_visualizations()
-    elif page == "Предсказания":
-        show_predictions()
+    # СТРАНИЦА 1: РАЗРАБОТЧИК
+    if page == "Разработчик":
+        st.title("Информация о разработчике")
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.image("C:/Users/Kokor/asteroid-classifier/Kokorin.png", width=100)
+        with col2:
+            st.markdown("""
+            **ФИО:** Кокорин Артём Владимирович 
+            **Группа:** ФИТ-231  
+            **Тема РГР:** Разработка Web-приложения (дашборда) для инференса (вывода) моделей ML и анализа данных
+            """)
     
-    st.sidebar.markdown("---")
-    st.sidebar.info(
-        "**📌 Как использовать:**\n"
-        "1. Изучите информацию о датасете\n"
-        "2. Посмотрите визуализации\n"
-        "3. Выберите модель и сделайте предсказание"
-    )
+    # СТРАНИЦА 2: ДАННЫЕ
+    elif page == "Данные":
+        st.title("Информация о наборе данных")
+        
+        if df.empty:
+            st.error("Данные не загружены")
+            return
+        
+        st.markdown("""
+        ### Описание предметной области
+        Датасет содержит информацию об астероидах. 
+        Цель - классификация астероидов на опасные (hazardous=1) и неопасные (hazardous=0) 
+        на основе их физических характеристик.
+        """)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Всего записей", len(df))
+        with col2:
+            st.metric("Признаков", df.shape[1]-1)
+        with col3:
+            st.metric("Опасных", f"{(df['hazardous']==1).sum()} ({(df['hazardous']==1).mean()*100:.1f}%)")
+        with col4:
+            st.metric("Безопасных", f"{(df['hazardous']==0).sum()} ({(df['hazardous']==0).mean()*100:.1f}%)")
+        
+        st.subheader("Описание признаков")
+        desc_df = pd.DataFrame({
+            'Признак': ['est_diameter_min', 'est_diameter_max', 'avg_diameter', 'relative_velocity', 
+                       'miss_distance', 'absolute_magnitude', 'hazardous'],
+            'Описание': ['Минимальный диаметр', 'Максимальный диаметр', 'Средний диаметр', 
+                        'Относительная скорость', 'Дистанция промаха', 'Абсолютная магнитуда', 'Опасность'],
+            'Ед. изм.': ['км', 'км', 'км', 'км/ч', 'км', 'магн.', '0/1']
+        })
+        st.dataframe(desc_df, use_container_width=True)
+        
+        st.subheader("Предобработка данных")
+        st.markdown("""
+        **Выполненные шаги:**
+        1. Удаление пропущенных значений
+        2. Добавление признака avg_diameter
+        3. Балансировка классов (SMOTE)
+        4. Разделение на train/test (80/20)
+        """)
+        
+        st.subheader("EDA - Основные статистики")
+        st.dataframe(df.describe(), use_container_width=True)
+        
+        st.subheader("Пример данных")
+        st.dataframe(df.head(10), use_container_width=True)
+    
+    # СТРАНИЦА 3: ВИЗУАЛИЗАЦИЯ
+    elif page == "Визуализация":
+        st.title("Визуализация зависимостей")
+        
+        if df.empty:
+            st.error("Данные не загружены")
+            return
+        
+        tab1, tab2, tab3, tab4 = st.tabs(["Распределения", "Корреляции", "Зависимости", "3D"])
+        
+        with tab1:
+            feat = st.selectbox("Признак", df.columns[:-1], key='hist')
+            fig = px.histogram(df, x=feat, color='hazardous', barmode='overlay', 
+                              color_discrete_map={0: 'blue', 1: 'red'},
+                              title=f'Распределение {feat}')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with tab2:
+            fig = px.imshow(df.corr(), text_auto=True, aspect='auto', 
+                          color_continuous_scale='RdBu_r', title='Корреляционная матрица')
+            st.plotly_chart(fig, use_container_width=True)
+            
+            corr_target = df.corr()['hazardous'].drop('hazardous').sort_values()
+            fig2 = px.bar(x=corr_target.values, y=corr_target.index, orientation='h',
+                         title='Корреляция с опасностью', color=corr_target.values,
+                         color_continuous_scale='RdBu_r')
+            st.plotly_chart(fig2, use_container_width=True)
+        
+        with tab3:
+            x_feat = st.selectbox("Ось X", df.columns[:-1], key='x')
+            y_feat = st.selectbox("Ось Y", df.columns[:-1], key='y')
+            fig = px.scatter(df, x=x_feat, y=y_feat, color='hazardous',
+                           color_discrete_map={0: 'blue', 1: 'red'},
+                           title=f'{y_feat} vs {x_feat}')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with tab4:
+            x3d = st.selectbox("X", df.columns[:-1], key='x3d')
+            y3d = st.selectbox("Y", df.columns[:-1], key='y3d')
+            z3d = st.selectbox("Z", df.columns[:-1], key='z3d')
+            fig = px.scatter_3d(df, x=x3d, y=y3d, z=z3d, color='hazardous',
+                               color_discrete_map={0: 'blue', 1: 'red'},
+                               title=f'3D проекция')
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # ПРЕДСКАЗАНИЕ
+    elif page == "Предсказание":
+        st.title("Предсказание опасности астероида")
+        
+        if not models:
+            st.error("Модели не загружены. Проверьте папку models/")
+            return
+        
+        model_name = st.sidebar.selectbox("Выберите модель", list(models.keys()))
+        model = models[model_name]
+        
+        tab1, tab2 = st.tabs(["Ручной ввод", "Загрузка CSV"])
+        
+        #  Ручной ввод
+        with tab1:
+            col1, col2 = st.columns(2)
+            with col1:
+                d_min = st.number_input("Мин. диаметр (км)", 0.0, 100.0, 0.1, step=0.1)
+                d_max = st.number_input("Макс. диаметр (км)", 0.0, 200.0, 0.2, step=0.1)
+                velocity = st.number_input("Скорость (км/ч)", 0.0, 300000.0, 50000.0, step=1000.0)
+            with col2:
+                distance = st.number_input("Дистанция (км)", 0.0, 1e9, 1e7, step=1e6)
+                magnitude = st.number_input("Магнитуда", 0.0, 50.0, 20.0, step=0.1)
+            
+            if st.button("Предсказать", use_container_width=True):
+                avg_d = (d_min + d_max) / 2
+                input_df = pd.DataFrame([[d_min, d_max, velocity, distance, magnitude, avg_d]], 
+                                       columns=['est_diameter_min', 'est_diameter_max', 
+                                               'relative_velocity', 'miss_distance', 
+                                               'absolute_magnitude', 'avg_diameter'])
+                
+                pred, prob = predict(model, input_df, model_name)
+                
+                if pred is not None:
+                    st.markdown("---")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if pred == 1:
+                            st.error("ОПАСЕН")
+                        else:
+                            st.success("НЕ ОПАСЕН")
+                    with col2:
+                        st.metric("Вероятность опасности", f"{prob*100:.1f}%")
+                    with col3:
+                        st.metric("Модель", model_name[:15])
+                    
+                    #fig = go.Figure(go.Indicator(
+                    #    mode="gauge+number",
+                    #    value=prob*100,
+                    #    title="Вероятность опасности (%)",
+                    #    gauge={'axis': {'range': [0, 100]},
+                    #          'bar': {'color': 'red' if pred == 1 else 'green'},
+                    #          'steps': [{'range': [0, 50], 'color': 'lightgreen'},
+                    #                   {'range': [50, 100], 'color': 'lightcoral'}]}
+                    #))
+                    #fig.update_layout(height=250)
+                    #st.plotly_chart(fig, use_container_width=True)
+        
+        # Вкладка 2: Загрузка CSV
+        with tab2:
+            st.markdown("""
+            **Формат CSV:**
+            - est_diameter_min, est_diameter_max, relative_velocity, miss_distance, absolute_magnitude
+            """)
+            
+            uploaded = st.file_uploader("Выберите CSV файл", type=['csv'])
+            
+            if uploaded:
+                df_upload = pd.read_csv(uploaded)
+                if 'avg_diameter' not in df_upload.columns:
+                    df_upload['avg_diameter'] = (df_upload['est_diameter_min'] + df_upload['est_diameter_max']) / 2
+                
+                st.write("Предпросмотр:", df_upload.head())
+                
+                if st.button("Выполнить предсказание"):
+                    results = []
+                    for _, row in df_upload.iterrows():
+                        input_df = pd.DataFrame([row])
+                        pred, prob = predict(model, input_df, model_name)
+                        results.append({'prediction': pred, 'probability': prob})
+                    
+                    res_df = df_upload.copy()
+                    res_df['prediction'] = [r['prediction'] for r in results]
+                    res_df['probability'] = [r['probability'] for r in results]
+                    res_df['status'] = res_df['prediction'].map({0: 'Безопасен', 1: 'ОПАСЕН'})
+                    
+                    st.subheader("Результаты")
+                    st.dataframe(res_df)
+                    
+                    # Статистика
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Опасных", (res_df['prediction']==1).sum())
+                    col2.metric("Безопасных", (res_df['prediction']==0).sum())
+                    col3.metric("Всего", len(res_df))
+                    
+                    # График
+                    fig = px.pie(res_df, names='status', title='Распределение предсказаний')
+                    st.plotly_chart(fig)
+                    
+                    # Скачивание
+                    csv = res_df.to_csv(index=False)
+                    st.download_button("Скачать результаты", csv, "predictions.csv", "text/csv")
 
 if __name__ == "__main__":
     main()
