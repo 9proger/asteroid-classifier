@@ -130,37 +130,38 @@ def show_dataset_info():
     with col1:
         st.metric("Количество записей", len(df))
     with col2:
-        st.metric("Количество признаков", df.shape[1] - 1)
+        st.metric("Количество признаков", df.shape[1])
     with col3:
-        danger_pct = (df['hazardous'] == 1).mean() * 100
-        st.metric("Опасных астероидов", f"{danger_pct:.1f}%")
+        if 'hazardous' in df.columns:
+            danger_pct = (df['hazardous'] == 1).mean() * 100
+            st.metric("Опасных астероидов", f"{danger_pct:.1f}%")
     
-    # Таблица с описанием признаков
+    # Статическая таблица с описанием признаков
     st.subheader("📋 Описание признаков")
+    
     features_info = pd.DataFrame({
         'Признак': ['est_diameter_min', 'est_diameter_max', 'relative_velocity', 
                    'miss_distance', 'absolute_magnitude', 'hazardous'],
         'Описание': [
-            'Минимальный оценочный диаметр (км)',
-            'Максимальный оценочный диаметр (км)',
-            'Относительная скорость (км/ч)',
-            'Дистанция промаха (км)',
+            'Минимальный оценочный диаметр',
+            'Максимальный оценочный диаметр',
+            'Относительная скорость',
+            'Дистанция промаха',
             'Абсолютная звездная величина',
-            'Целевой признак: опасен (1) или нет (0)'
+            'Опасность (1 - да, 0 - нет)'
         ],
-        'Тип данных': [df[col].dtype for col in df.columns]
+        'Единицы измерения': ['км', 'км', 'км/ч', 'км', 'магнитуда', 'бинарный']
     })
+    
     st.dataframe(features_info, use_container_width=True)
     
-    # Предобработка данных
-    st.subheader("🔧 Предобработка данных")
-    st.markdown("""
-    **Выполненные шаги:**
-    1. Удаление пропущенных значений
-    2. Масштабирование признаков (StandardScaler)
-    3. Балансировка классов (SMOTE)
-    4. Разделение на train/test (80/20)
-    """)
+    # Показываем первые строки датасета
+    st.subheader("👀 Пример данных")
+    st.dataframe(df.head(), use_container_width=True)
+    
+    # Статистика
+    st.subheader("📊 Статистика")
+    st.dataframe(df.describe(), use_container_width=True)
 
 # Страница 3: Визуализации
 def show_visualizations():
