@@ -1,4 +1,6 @@
 import torch
+import matplotlib.pyplot as plt
+import seaborn as sns
 import torch.nn as nn
 import streamlit as st
 import pandas as pd
@@ -6,8 +8,6 @@ import numpy as np
 import pickle
 import os
 import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -121,13 +121,8 @@ def load_data():
         return pd.DataFrame()
 
 def predict(model, input_data, model_name):
-    """
-    Универсальная функция предсказания
-    """
     try:
-        # Для нейронной сети
         if 'Нейронная сеть' in model_name or isinstance(model, torch.nn.Module):
-            # Убеждаемся, что данные в правильном порядке
             feature_order = ['est_diameter_min', 'est_diameter_max', 'relative_velocity', 
                             'miss_distance', 'absolute_magnitude', 'avg_diameter']
             
@@ -144,7 +139,6 @@ def predict(model, input_data, model_name):
             X = input_data[feature_order].values
             
             with torch.no_grad():
-                # Преобразуем в тензор
                 X_tensor = torch.tensor(X, dtype=torch.float32)
                 
                 # Получаем предсказание
@@ -163,7 +157,6 @@ def predict(model, input_data, model_name):
         
         # Для sklearn моделей
         else:
-            # Проверяем ожидаемые признаки
             if hasattr(model, 'feature_names_in_'):
                 expected = list(model.feature_names_in_)
                 
@@ -196,7 +189,6 @@ def predict(model, input_data, model_name):
             else:
                 danger_probs = np.array([0.5] * len(preds))
             
-            # Для одного примера возвращаем скаляры
             if len(preds) == 1:
                 return preds[0], danger_probs[0]
             else:
@@ -206,7 +198,6 @@ def predict(model, input_data, model_name):
         st.error(f"Ошибка в предсказании: {str(e)}")
         return None, None
 
-# Основной интерфейс
 def main():
     st.sidebar.title("Навигация")
     page = st.sidebar.radio(
@@ -261,7 +252,7 @@ def main():
             'Признак': ['est_diameter_min', 'est_diameter_max', 'avg_diameter', 'relative_velocity', 
                        'miss_distance', 'absolute_magnitude', 'hazardous'],
             'Описание': ['Минимальный диаметр', 'Максимальный диаметр', 'Средний диаметр', 
-                        'Относительная скорость', 'Дистанция промаха', 'Абсолютная магнитуда', 'Опасность'],
+                        'Относительная скорость относительно Земли', 'Дистанция до Земли', 'Собственная яркость', 'Опасность'],
             'Ед. изм.': ['км', 'км', 'км', 'км/ч', 'км', 'магн.', '0/1']
         })
         st.dataframe(desc_df, use_container_width=True)
@@ -284,47 +275,152 @@ def main():
     # СТРАНИЦА 3: ВИЗУАЛИЗАЦИЯ
     elif page == "Визуализация":
         st.title("Визуализация зависимостей")
-        
+    
         if df.empty:
             st.error("Данные не загружены")
             return
-        
-        tab1, tab2, tab3, tab4 = st.tabs(["Распределения", "Корреляции", "Зависимости", "3D"])
-        
+    
+        plt.style.use('seaborn-v0_8-darkgrid')
+    
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Распределения", 
+            "Корреляции", 
+            "Зависимости", 
+            "3D визуализация"
+        ])
+    
         with tab1:
-            feat = st.selectbox("Признак", df.columns[:-1], key='hist')
-            fig = px.histogram(df, x=feat, color='hazardous', barmode='overlay', 
-                              color_discrete_map={0: 'blue', 1: 'red'},
-                              title=f'Распределение {feat}')
-            st.plotly_chart(fig, use_container_width=True)
+            st.subheader("Распределение признаков")
+            feat = st.selectbox("Выберите признак:", df.columns[:-1], key='hist')
         
-        with tab2:
-            fig = px.imshow(df.corr(), text_auto=True, aspect='auto', 
-                          color_continuous_scale='RdBu_r', title='Корреляционная матрица')
-            st.plotly_chart(fig, use_container_width=True)
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        
             
-            corr_target = df.corr()['hazardous'].drop('hazardous').sort_values()
-            fig2 = px.bar(x=corr_target.values, y=corr_target.index, orientation='h',
-                         title='Корреляция с опасностью', color=corr_target.values,
-                         color_continuous_scale='RdBu_r')
-            st.plotly_chart(fig2, use_container_width=True)
+            for hazardous, color, label in [(0, 'blue', 'Не опасен'), (1, 'red', 'Опасен')]:
+                subset = df[df['hazardous'] == hazardous]
+                if not subset.empty:
+                    ax1.hist(subset[feat], alpha=0.5, color=color, label=label, bins=20)
+            ax1.set_xlabel(feat)
+            ax1.set_ylabel('Частота')
+            ax1.set_title(f'Гистограмма {feat}')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
         
+            data = [df[df['hazardous']==0][feat].dropna(), 
+                    df[df['hazardous']==1][feat].dropna()]
+            ax2.boxplot(data, labels=['Не опасен', 'Опасен'], patch_artist=True,
+                    boxprops=dict(facecolor='lightblue'),
+                    medianprops=dict(color='red', linewidth=2))
+            ax2.set_ylabel(feat)
+            ax2.set_title(f'Ящик с усами {feat}')
+            ax2.grid(True, alpha=0.3)
+        
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+    
+        with tab2:
+            st.subheader("Корреляционная матрица")
+        
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+        
+            
+            corr = df.select_dtypes(include=[np.number]).corr()
+            im = ax1.imshow(corr, cmap='RdBu_r', aspect='auto', vmin=-1, vmax=1)
+            ax1.set_xticks(range(len(corr.columns)))
+            ax1.set_yticks(range(len(corr.columns)))
+            ax1.set_xticklabels(corr.columns, rotation=45, ha='right')
+            ax1.set_yticklabels(corr.columns)
+            ax1.set_title('Корреляционная матрица')
+            plt.colorbar(im, ax=ax1)
+        
+            
+            for i in range(len(corr.columns)):
+                for j in range(len(corr.columns)):
+                    if i != j:  
+                        text = ax1.text(j, i, f'{corr.iloc[i, j]:.2f}',
+                                    ha='center', va='center', fontsize=8)
+        
+            
+            if 'hazardous' in corr.columns:
+                corr_target = corr['hazardous'].drop('hazardous').sort_values()
+                colors = ['red' if x > 0 else 'blue' for x in corr_target.values]
+                ax2.barh(range(len(corr_target)), corr_target.values, color=colors, alpha=0.7)
+                ax2.set_yticks(range(len(corr_target)))
+                ax2.set_yticklabels(corr_target.index)
+                ax2.axvline(x=0, color='black', linestyle='-', linewidth=0.5)
+                ax2.set_xlabel('Коэффициент корреляции')
+                ax2.set_title('Корреляция с опасностью')
+                ax2.grid(True, alpha=0.3, axis='x')
+        
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+    
         with tab3:
-            x_feat = st.selectbox("Ось X", df.columns[:-1], key='x')
-            y_feat = st.selectbox("Ось Y", df.columns[:-1], key='y')
-            fig = px.scatter(df, x=x_feat, y=y_feat, color='hazardous',
-                           color_discrete_map={0: 'blue', 1: 'red'},
-                           title=f'{y_feat} vs {x_feat}')
-            st.plotly_chart(fig, use_container_width=True)
+            st.subheader("Зависимости между признаками")
         
+            col1, col2 = st.columns(2)
+            with col1:
+                x_feat = st.selectbox("Ось X:", df.columns[:-1], key='scatter_x')
+            with col2:
+                y_feat = st.selectbox("Ось Y:", df.columns[:-1], key='scatter_y')
+        
+            fig, ax = plt.subplots(figsize=(10, 6))
+        
+            colors = {0: 'blue', 1: 'red'}
+            for hazardous in [0, 1]:
+                subset = df[df['hazardous'] == hazardous]
+                if not subset.empty:
+                    ax.scatter(subset[x_feat], subset[y_feat], 
+                            c=colors[hazardous], label='Опасен' if hazardous else 'Не опасен',
+                            alpha=0.6, s=30)
+        
+            ax.set_xlabel(x_feat)
+            ax.set_ylabel(y_feat)
+            ax.set_title(f'{y_feat} vs {x_feat}')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+        
+            st.pyplot(fig)
+            plt.close(fig)
+    
         with tab4:
-            x3d = st.selectbox("X", df.columns[:-1], key='x3d')
-            y3d = st.selectbox("Y", df.columns[:-1], key='y3d')
-            z3d = st.selectbox("Z", df.columns[:-1], key='z3d')
-            fig = px.scatter_3d(df, x=x3d, y=y3d, z=z3d, color='hazardous',
-                               color_discrete_map={0: 'blue', 1: 'red'},
-                               title=f'3D проекция')
-            st.plotly_chart(fig, use_container_width=True)
+            st.subheader("3D визуализация")
+        
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                x3d = st.selectbox("Ось X:", df.columns[:-1], key='3d_x')
+            with col2:
+                y3d = st.selectbox("Ось Y:", df.columns[:-1], key='3d_y')
+            with col3:
+                z3d = st.selectbox("Ось Z:", df.columns[:-1], key='3d_z')
+        
+        
+            fig = plt.figure(figsize=(10, 8))
+            ax = fig.add_subplot(111, projection='3d')
+        
+            colors = {0: 'blue', 1: 'red'}
+            markers = {0: 'o', 1: '^'}
+        
+            for hazardous in [0, 1]:
+                subset = df[df['hazardous'] == hazardous]
+                if not subset.empty:
+                    ax.scatter(subset[x3d], subset[y3d], subset[z3d],
+                            c=colors[hazardous], marker=markers[hazardous],
+                            label='Опасен' if hazardous else 'Не опасен',
+                            alpha=0.6, s=30)
+        
+            ax.set_xlabel(x3d)
+            ax.set_ylabel(y3d)
+            ax.set_zlabel(z3d)
+            ax.set_title('3D проекция признаков')
+            ax.legend()
+        
+            ax.view_init(elev=20, azim=45)
+        
+            st.pyplot(fig)
+            plt.close(fig)
     
     # ПРЕДСКАЗАНИЕ
     elif page == "Предсказание":
@@ -415,17 +511,17 @@ def main():
                     st.subheader("Результаты")
                     st.dataframe(res_df)
                     
-                    # Статистика
+                
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Опасных", (res_df['prediction']==1).sum())
                     col2.metric("Безопасных", (res_df['prediction']==0).sum())
                     col3.metric("Всего", len(res_df))
                     
-                    # График
+                 
                     fig = px.pie(res_df, names='status', title='Распределение предсказаний')
                     st.plotly_chart(fig)
                     
-                    # Скачивание
+                   
                     csv = res_df.to_csv(index=False)
                     st.download_button("Скачать результаты", csv, "predictions.csv", "text/csv")
 
